@@ -370,7 +370,34 @@ if st.button("Download Data and Run Backtest"):
         progress.progress((i + 1) / len(symbols))
 
     status.write("Download completed.")
+# -----------------------------
+# Today's Buy Candidates
+# -----------------------------
+st.subheader("Today's Buy Candidates")
 
+latest_signals = []
+
+for symbol, df in stock_data.items():
+    if df.empty:
+        continue
+
+    last_row = df.iloc[-1]
+
+    if last_row["Entry_Signal"]:
+        latest_signals.append({
+            "Stock": symbol,
+            "Close": round(last_row["Close"], 2),
+            "SMA50": round(last_row["SMA_50"], 2),
+            "SMA150": round(last_row["SMA_150"], 2),
+            "EMA220": round(last_row["EMA_220"], 2),
+        })
+
+if latest_signals:
+    st.success(f"{len(latest_signals)} stocks qualify today")
+    signals_df = pd.DataFrame(latest_signals)
+    st.dataframe(signals_df)
+else:
+    st.warning("No stocks meet the criteria today")
     if failed_downloads:
         st.warning("Some symbols failed to download.")
         st.dataframe(
