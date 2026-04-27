@@ -48,10 +48,8 @@ def clean_filename(name):
 
 def to_yahoo_symbol(symbol):
     symbol = str(symbol).strip().upper()
-
     if symbol.endswith(".NS"):
         return symbol
-
     return f"{symbol}.NS"
 
 
@@ -119,6 +117,32 @@ def add_indicators(df):
     return df
 
 
+def get_today_buy_candidates(stock_data):
+    candidates = []
+
+    for symbol, df in stock_data.items():
+        if df.empty:
+            continue
+
+        last_row = df.iloc[-1]
+
+        if bool(last_row["Entry_Signal"]):
+            candidates.append({
+                "Stock": symbol,
+                "Close": round(last_row["Close"], 2),
+                "SMA 50": round(last_row["SMA_50"], 2),
+                "SMA 150": round(last_row["SMA_150"], 2),
+                "EMA 220": round(last_row["EMA_220"], 2),
+                "52W High Previous": round(last_row["High_52W_Prev"], 2),
+                "52W Low": round(last_row["Low_52W"], 2),
+                "% Above 52W Low": round(
+                    ((last_row["Close"] / last_row["Low_52W"]) - 1) * 100, 2
+                ),
+            })
+
+    return pd.DataFrame(candidates)
+
+
 def run_backtest(stock_data, backtest_start_date):
     cash = INITIAL_CAPITAL
     positions = {}
@@ -126,7 +150,7 @@ def run_backtest(stock_data, backtest_start_date):
     portfolio_values = []
 
     all_dates = sorted(
-        set(date for df in stock_data.values() for date in df["Date"])
+        set(d for df in stock_data.values() for d in df["Date"])
     )
 
     all_dates = [
@@ -137,7 +161,7 @@ def run_backtest(stock_data, backtest_start_date):
     for current_date in all_dates:
 
         # -----------------------------
-        # Exit logic
+        # Exit Logic
         # -----------------------------
         for symbol in list(positions.keys()):
             df = stock_data[symbol]
@@ -181,7 +205,7 @@ def run_backtest(stock_data, backtest_start_date):
                 del positions[symbol]
 
         # -----------------------------
-        # Entry logic
+        # Entry Logic
         # -----------------------------
         max_allocation = INITIAL_CAPITAL * MAX_POSITION_PCT
 
@@ -196,7 +220,7 @@ def run_backtest(stock_data, backtest_start_date):
 
             signal_row = signal_row.iloc[0]
 
-            if not signal_row["Entry_Signal"]:
+            if not bool(signal_row["Entry_Signal"]):
                 continue
 
             future_rows = df[df["Date"] > current_date]
@@ -232,7 +256,7 @@ def run_backtest(stock_data, backtest_start_date):
             }
 
         # -----------------------------
-        # Portfolio value
+        # Portfolio Value
         # -----------------------------
         portfolio_value = cash
 
@@ -250,8 +274,8 @@ def run_backtest(stock_data, backtest_start_date):
             "Open Positions": len(positions)
         })
 
-    portfolio_df = pd.DataFrame(portfolio_values)
     trades_df = pd.DataFrame(trades)
+    portfolio_df = pd.DataFrame(portfolio_values)
 
     return trades_df, portfolio_df
 
@@ -296,7 +320,7 @@ def calculate_summary(trades_df, portfolio_df):
 
 
 # -----------------------------
-# App UI
+# Sidebar Settings
 # -----------------------------
 st.sidebar.header("Settings")
 
@@ -333,9 +357,10 @@ with st.expander("View symbols"):
 
 
 # -----------------------------
-# Download + Backtest
+# Main App Execution
 # -----------------------------
 if st.button("Download Data and Run Backtest"):
+
     stock_data = {}
     failed_downloads = []
 
@@ -370,57 +395,56 @@ if st.button("Download Data and Run Backtest"):
         progress.progress((i + 1) / len(symbols))
 
     status.write("Download completed.")
-# -----------------------------
-# Today's Buy Candidates
-# -----------------------------
-st.subheader("Today's Buy Candidates")
 
-latest_signals = []
-
-for symbol, df in stock_data.items():
-    if df.empty:
-        continue
-
-    last_row = df.iloc[-1]
-
-    if last_row["Entry_Signal"]:
-        latest_signals.append({
-            "Stock": symbol,
-            "Close": round(last_row["Close"], 2),
-            "SMA50": round(last_row["SMA_50"], 2),
-            "SMA150": round(last_row["SMA_150"], 2),
-            "EMA220": round(last_row["EMA_220"], 2),
-        })
-
-if latest_signals:
-    st.success(f"{len(latest_signals)} stocks qualify today")
-    signals_df = pd.DataFrame(latest_signals)
-    st.dataframe(signals_df)
-else:
-    st.warning("No stocks meet the criteria today")
     if failed_downloads:
         st.warning("Some symbols failed to download.")
         st.dataframe(
             pd.DataFrame(
                 failed_downloads,
                 columns=["Symbol", "Yahoo Ticker", "Reason"]
-            )
+            ),
+            use_container_width=True
         )
 
     if not stock_data:
         st.error("No stock data available for backtesting.")
         st.stop()
 
-    st.subheader("Running Backtest")
+    # -----------------------------
+    # Today's Buy Candidates
+    # -----------------------------
+    st.subheader("Today's Buy Candidates")
+
+    candidates_df = get_today_buy_candidates(stock_data)
+
+    if candidates_df.empty:
+        st.warning("No stocks meet the strategy criteria today.")
+    else:
+        st.success(f"{len(candidates_df)} stocks qualify today.")
+        st.dataframe(candidates_df, use_container_width=True)
+
+        st.download_button(
+            "Download Today's Buy Candidates CSV",
+            data=candidates_df.to_csv(index=False),
+            file_name="today_buy_candidates.csv",
+            mime="text/csv"
+        )
+
+    # -----------------------------
+    # Run Backtest
+    # -----------------------------
+    st.subheader("Backtest Results")
 
     trades_df, portfolio_df = run_backtest(
         stock_data,
         backtest_start_date.strftime("%Y-%m-%d")
     )
 
-    summary = calculate_summary(trades_df, portfolio_df)
+    if portfolio_df.empty:
+        st.error("Backtest could not run because portfolio data is empty.")
+        st.stop()
 
-    st.subheader("Backtest Summary")
+    summary = calculate_summary(trades_df, portfolio_df)
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -444,7 +468,7 @@ else:
     st.subheader("Trades")
 
     if trades_df.empty:
-        st.warning("No trades were generated with the current rules.")
+        st.warning("No historical trades were generated with the current rules.")
     else:
         st.dataframe(trades_df, use_container_width=True)
 
@@ -456,7 +480,6 @@ else:
         )
 
     st.subheader("Portfolio Data")
-
     st.dataframe(portfolio_df, use_container_width=True)
 
     st.download_button(
