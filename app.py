@@ -8,20 +8,11 @@ import streamlit as st
 import yfinance as yf
 
 
-# -----------------------------
-# Streamlit Config
-# -----------------------------
-st.set_page_config(
-    page_title="Nifty 50 Downloader + Backtest",
-    layout="wide"
-)
+st.set_page_config(page_title="Nifty 50 Downloader + Backtest", layout="wide")
 
 st.title("Nifty 50 Yahoo Finance Downloader + Strategy Backtest")
 
 
-# -----------------------------
-# Constants
-# -----------------------------
 INPUT_FILE = "Nifty 50 symbols.csv"
 OUTPUT_FOLDER = "data"
 
@@ -39,18 +30,13 @@ DIP_LOOKBACK = 90
 STOP_LOSS_PCT = 0.15
 
 
-# -----------------------------
-# Helper Functions
-# -----------------------------
 def clean_filename(name):
     return re.sub(r'[\\/*?:"<>|]', "_", str(name))
 
 
 def to_yahoo_symbol(symbol):
     symbol = str(symbol).strip().upper()
-    if symbol.endswith(".NS"):
-        return symbol
-    return f"{symbol}.NS"
+    return symbol if symbol.endswith(".NS") else f"{symbol}.NS"
 
 
 def read_symbols(file_path):
@@ -70,7 +56,7 @@ def download_stock_data(ticker, start_date):
         start=start_date,
         end=date.today().strftime("%Y-%m-%d"),
         progress=False,
-        auto_adjust=False
+        auto_adjust=False,
     )
 
     if df.empty:
@@ -103,44 +89,112 @@ def add_indicators(df):
         .astype(bool)
     )
 
+    df["Rule_1_150SMA_GT_220EMA"] = df["SMA_150"] > df["EMA_220"]
+    df["Rule_2_Close_GT_50SMA"] = df["Close"] > df["SMA_50"]
+    df["Rule_3_50SMA_GT_150SMA"] = df["SMA_50"] > df["SMA_150"]
+    df["Rule_4_Close_GT_125pct_52WLow"] = df["Close"] > 1.25 * df["Low_52W"]
+    df["Rule_5_Dipped_Below_220EMA_90D"] = df["Dipped_Below_EMA_220"]
+    df["Rule_6_Close_Breakout_52WHigh"] = df["Close"] > df["High_52W_Prev"]
+
     df["Filter_Pass"] = (
-        (df["SMA_150"] > df["EMA_220"]) &
-        (df["Close"] > df["SMA_50"]) &
-        (df["SMA_50"] > df["SMA_150"]) &
-        (df["Close"] > 1.25 * df["Low_52W"]) &
-        (df["Dipped_Below_EMA_220"])
+        df["Rule_1_150SMA_GT_220EMA"]
+        & df["Rule_2_Close_GT_50SMA"]
+        & df["Rule_3_50SMA_GT_150SMA"]
+        & df["Rule_4_Close_GT_125pct_52WLow"]
+        & df["Rule_5_Dipped_Below_220EMA_90D"]
     )
 
-    df["Breakout_52W_High"] = df["Close"] > df["High_52W_Prev"]
+    df["Breakout_52W_High"] = df["Rule_6_Close_Breakout_52WHigh"]
     df["Entry_Signal"] = df["Filter_Pass"] & df["Breakout_52W_High"]
 
     return df
 
 
 def get_today_buy_candidates(stock_data):
-    candidates = []
+    rows = []
 
     for symbol, df in stock_data.items():
         if df.empty:
             continue
 
-        last_row = df.iloc[-1]
+        last = df.iloc[-1]
 
-        if bool(last_row["Entry_Signal"]):
-            candidates.append({
+        if bool(last["Entry_Signal"]):
+            rows.append({
                 "Stock": symbol,
-                "Close": round(last_row["Close"], 2),
-                "SMA 50": round(last_row["SMA_50"], 2),
-                "SMA 150": round(last_row["SMA_150"], 2),
-                "EMA 220": round(last_row["EMA_220"], 2),
-                "52W High Previous": round(last_row["High_52W_Prev"], 2),
-                "52W Low": round(last_row["Low_52W"], 2),
-                "% Above 52W Low": round(
-                    ((last_row["Close"] / last_row["Low_52W"]) - 1) * 100, 2
-                ),
+                "Close": round(last["Close"], 2),
+                "SMA 50": round(last["SMA_50"], 2),
+                "SMA 150": round(last["SMA_150"], 2),
+                "EMA 220": round(last["EMA_220"], 2),
+                "52W High Prev": round(last["High_52W_Prev"], 2),
+                "52W Low": round(last["Low_52W"], 2),
+                "% Above 52W Low": round(((last["Close"] / last["Low_52W"]) - 1) * 100, 2),
             })
 
-    return pd.DataFrame(candidates)
+    return pd.DataFrame(rows)
+
+
+def get_near_trade_watchlist(stock_data):
+    rows = []
+
+    rule_columns = {
+        "150 SMA > 220 EMA": "Rule_1_150SMA_GT_220EMA",
+        "Close > 50 SMA": "Rule_2_Close_GT_50SMA",
+        "50 SMA > 150 SMA": "Rule_3_50SMA_GT_150SMA",
+        "Close > 1.25 x 52W Low": "Rule_4_Close_GT_125pct_52WLow",
+        "Dipped below 220 EMA in 90D": "Rule_5_Dipped_Below_220EMA_90D",
+        "Close breakout above 52W High": "Rule_6_Close_Breakout_52WHigh",
+    }
+
+    for symbol, df in stock_data.items():
+        if df.empty:
+            continue
+
+        last = df.iloc[-1]
+
+        rule_results = {
+            rule_name: bool(last[col])
+            for rule_name, col in rule_columns.items()
+        }
+
+        passed_count = sum(rule_results.values())
+        failed_rules = [rule for rule, passed in rule_results.items() if not passed]
+
+        distance_to_breakout = np.nan
+        if pd.notna(last["High_52W_Prev"]) and last["High_52W_Prev"] > 0:
+            distance_to_breakout = ((last["Close"] / last["High_52W_Prev"]) - 1) * 100
+
+        distance_to_220ema = np.nan
+        if pd.notna(last["EMA_220"]) and last["EMA_220"] > 0:
+            distance_to_220ema = ((last["Close"] / last["EMA_220"]) - 1) * 100
+
+        rows.append({
+            "Stock": symbol,
+            "Close": round(last["Close"], 2),
+            "Rules Passed": passed_count,
+            "Total Rules": 6,
+            "Score %": round((passed_count / 6) * 100, 2),
+            "Failed Rules": ", ".join(failed_rules) if failed_rules else "None",
+            "% From 52W High Breakout": round(distance_to_breakout, 2),
+            "% Above 220 EMA": round(distance_to_220ema, 2),
+            "Exact Buy Signal": bool(last["Entry_Signal"]),
+            "150 SMA > 220 EMA": rule_results["150 SMA > 220 EMA"],
+            "Close > 50 SMA": rule_results["Close > 50 SMA"],
+            "50 SMA > 150 SMA": rule_results["50 SMA > 150 SMA"],
+            "Close > 1.25 x 52W Low": rule_results["Close > 1.25 x 52W Low"],
+            "Dipped below 220 EMA in 90D": rule_results["Dipped below 220 EMA in 90D"],
+            "Close breakout above 52W High": rule_results["Close breakout above 52W High"],
+        })
+
+    watchlist = pd.DataFrame(rows)
+
+    if not watchlist.empty:
+        watchlist = watchlist.sort_values(
+            by=["Exact Buy Signal", "Rules Passed", "% From 52W High Breakout"],
+            ascending=[False, False, False],
+        )
+
+    return watchlist
 
 
 def run_backtest(stock_data, backtest_start_date):
@@ -149,20 +203,11 @@ def run_backtest(stock_data, backtest_start_date):
     trades = []
     portfolio_values = []
 
-    all_dates = sorted(
-        set(d for df in stock_data.values() for d in df["Date"])
-    )
-
-    all_dates = [
-        d for d in all_dates
-        if d >= pd.to_datetime(backtest_start_date)
-    ]
+    all_dates = sorted(set(d for df in stock_data.values() for d in df["Date"]))
+    all_dates = [d for d in all_dates if d >= pd.to_datetime(backtest_start_date)]
 
     for current_date in all_dates:
 
-        # -----------------------------
-        # Exit Logic
-        # -----------------------------
         for symbol in list(positions.keys()):
             df = stock_data[symbol]
             row = df[df["Date"] == current_date]
@@ -177,7 +222,6 @@ def run_backtest(stock_data, backtest_start_date):
 
             if row["Close"] < row["EMA_220"]:
                 exit_reason = "Close below 220 EMA"
-
             elif row["Close"] <= position["Entry_Price"] * (1 - STOP_LOSS_PCT):
                 exit_reason = "15% stop loss"
 
@@ -199,14 +243,11 @@ def run_backtest(stock_data, backtest_start_date):
                     "Invested": round(position["Invested"], 2),
                     "PnL": round(pnl, 2),
                     "PnL %": round(pnl_pct * 100, 2),
-                    "Exit Reason": exit_reason
+                    "Exit Reason": exit_reason,
                 })
 
                 del positions[symbol]
 
-        # -----------------------------
-        # Entry Logic
-        # -----------------------------
         max_allocation = INITIAL_CAPITAL * MAX_POSITION_PCT
 
         for symbol, df in stock_data.items():
@@ -236,10 +277,6 @@ def run_backtest(stock_data, backtest_start_date):
                 continue
 
             allocation = min(max_allocation, cash)
-
-            if allocation <= 0:
-                continue
-
             shares = int(allocation // entry_price)
 
             if shares <= 0:
@@ -252,12 +289,9 @@ def run_backtest(stock_data, backtest_start_date):
                 "Entry_Date": entry_date,
                 "Entry_Price": entry_price,
                 "Shares": shares,
-                "Invested": invested
+                "Invested": invested,
             }
 
-        # -----------------------------
-        # Portfolio Value
-        # -----------------------------
         portfolio_value = cash
 
         for symbol, position in positions.items():
@@ -271,19 +305,13 @@ def run_backtest(stock_data, backtest_start_date):
             "Date": current_date,
             "Portfolio Value": portfolio_value,
             "Cash": cash,
-            "Open Positions": len(positions)
+            "Open Positions": len(positions),
         })
 
-    trades_df = pd.DataFrame(trades)
-    portfolio_df = pd.DataFrame(portfolio_values)
-
-    return trades_df, portfolio_df
+    return pd.DataFrame(trades), pd.DataFrame(portfolio_values)
 
 
 def calculate_summary(trades_df, portfolio_df):
-    if portfolio_df.empty:
-        return {}
-
     final_value = portfolio_df["Portfolio Value"].iloc[-1]
     total_return = (final_value - INITIAL_CAPITAL) / INITIAL_CAPITAL
 
@@ -308,7 +336,6 @@ def calculate_summary(trades_df, portfolio_df):
         avg_loss = losses["PnL %"].mean() if not losses.empty else 0
 
     return {
-        "Initial Capital": INITIAL_CAPITAL,
         "Final Portfolio Value": round(final_value, 2),
         "Total Return %": round(total_return * 100, 2),
         "Max Drawdown %": round(max_drawdown * 100, 2),
@@ -319,28 +346,29 @@ def calculate_summary(trades_df, portfolio_df):
     }
 
 
-# -----------------------------
-# Sidebar Settings
-# -----------------------------
 st.sidebar.header("Settings")
 
 download_start_date = st.sidebar.date_input(
     "Download start date",
-    value=pd.to_datetime(DEFAULT_DOWNLOAD_START_DATE).date()
+    value=pd.to_datetime(DEFAULT_DOWNLOAD_START_DATE).date(),
 )
 
 backtest_start_date = st.sidebar.date_input(
     "Backtest start date",
-    value=pd.to_datetime(DEFAULT_BACKTEST_START_DATE).date()
+    value=pd.to_datetime(DEFAULT_BACKTEST_START_DATE).date(),
+)
+
+min_rules_for_watchlist = st.sidebar.slider(
+    "Minimum rules passed for near-trade watchlist",
+    min_value=1,
+    max_value=6,
+    value=4,
 )
 
 st.sidebar.write("Initial capital:", f"₹{INITIAL_CAPITAL:,.0f}")
 st.sidebar.write("Max allocation per stock:", f"{MAX_POSITION_PCT * 100:.0f}%")
 
 
-# -----------------------------
-# Read Symbols
-# -----------------------------
 if not os.path.exists(INPUT_FILE):
     st.error(f"CSV file not found: {INPUT_FILE}")
     st.stop()
@@ -356,9 +384,6 @@ with st.expander("View symbols"):
     st.write(symbols)
 
 
-# -----------------------------
-# Main App Execution
-# -----------------------------
 if st.button("Download Data and Run Backtest"):
 
     stock_data = {}
@@ -372,10 +397,7 @@ if st.button("Download Data and Run Backtest"):
         status.write(f"Downloading {ticker}...")
 
         try:
-            df = download_stock_data(
-                ticker,
-                download_start_date.strftime("%Y-%m-%d")
-            )
+            df = download_stock_data(ticker, download_start_date.strftime("%Y-%m-%d"))
 
             if df.empty:
                 failed_downloads.append([symbol, ticker, "No data returned"])
@@ -386,7 +408,7 @@ if st.button("Download Data and Run Backtest"):
                 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
                 df.to_csv(
                     os.path.join(OUTPUT_FOLDER, clean_filename(ticker) + ".csv"),
-                    index=False
+                    index=False,
                 )
 
         except Exception as e:
@@ -399,45 +421,56 @@ if st.button("Download Data and Run Backtest"):
     if failed_downloads:
         st.warning("Some symbols failed to download.")
         st.dataframe(
-            pd.DataFrame(
-                failed_downloads,
-                columns=["Symbol", "Yahoo Ticker", "Reason"]
-            ),
-            use_container_width=True
+            pd.DataFrame(failed_downloads, columns=["Symbol", "Yahoo Ticker", "Reason"]),
+            use_container_width=True,
         )
 
     if not stock_data:
         st.error("No stock data available for backtesting.")
         st.stop()
 
-    # -----------------------------
-    # Today's Buy Candidates
-    # -----------------------------
-    st.subheader("Today's Buy Candidates")
+    st.subheader("Today's Exact Buy Candidates")
 
     candidates_df = get_today_buy_candidates(stock_data)
 
     if candidates_df.empty:
-        st.warning("No stocks meet the strategy criteria today.")
+        st.warning("No stocks meet ALL strategy criteria today.")
     else:
         st.success(f"{len(candidates_df)} stocks qualify today.")
         st.dataframe(candidates_df, use_container_width=True)
 
         st.download_button(
-            "Download Today's Buy Candidates CSV",
+            "Download Exact Buy Candidates CSV",
             data=candidates_df.to_csv(index=False),
             file_name="today_buy_candidates.csv",
-            mime="text/csv"
+            mime="text/csv",
         )
 
-    # -----------------------------
-    # Run Backtest
-    # -----------------------------
+    st.subheader("Near-Trade Watchlist")
+
+    watchlist_df = get_near_trade_watchlist(stock_data)
+    near_df = watchlist_df[watchlist_df["Rules Passed"] >= min_rules_for_watchlist]
+
+    if near_df.empty:
+        st.warning("No stocks qualify for the near-trade watchlist.")
+    else:
+        st.write(
+            "These are watchlist names only. They pass most rules but may still fail one or more conditions."
+        )
+        st.dataframe(near_df, use_container_width=True)
+
+        st.download_button(
+            "Download Near-Trade Watchlist CSV",
+            data=near_df.to_csv(index=False),
+            file_name="near_trade_watchlist.csv",
+            mime="text/csv",
+        )
+
     st.subheader("Backtest Results")
 
     trades_df, portfolio_df = run_backtest(
         stock_data,
-        backtest_start_date.strftime("%Y-%m-%d")
+        backtest_start_date.strftime("%Y-%m-%d"),
     )
 
     if portfolio_df.empty:
@@ -447,14 +480,12 @@ if st.button("Download Data and Run Backtest"):
     summary = calculate_summary(trades_df, portfolio_df)
 
     col1, col2, col3, col4 = st.columns(4)
-
     col1.metric("Final Value", f"₹{summary['Final Portfolio Value']:,.0f}")
     col2.metric("Total Return", f"{summary['Total Return %']}%")
     col3.metric("Max Drawdown", f"{summary['Max Drawdown %']}%")
     col4.metric("Total Trades", summary["Total Trades"])
 
     col5, col6, col7 = st.columns(3)
-
     col5.metric("Win Rate", f"{summary['Win Rate %']}%")
     col6.metric("Avg Win", f"{summary['Average Win %']}%")
     col7.metric("Avg Loss", f"{summary['Average Loss %']}%")
@@ -476,7 +507,7 @@ if st.button("Download Data and Run Backtest"):
             "Download Trades CSV",
             data=trades_df.to_csv(index=False),
             file_name="backtest_trades.csv",
-            mime="text/csv"
+            mime="text/csv",
         )
 
     st.subheader("Portfolio Data")
@@ -486,5 +517,5 @@ if st.button("Download Data and Run Backtest"):
         "Download Portfolio CSV",
         data=portfolio_df.to_csv(index=False),
         file_name="backtest_portfolio.csv",
-        mime="text/csv"
+        mime="text/csv",
     )
