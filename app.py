@@ -4,7 +4,7 @@ import pandas as pd
 import yfinance as yf
 
 
-INPUT_FILE = "Nifty 50(1).csv"
+INPUT_FILE = "Nifty 50.csv"
 OUTPUT_FOLDER = "data"
 START_DATE = "2025-01-01"
 
