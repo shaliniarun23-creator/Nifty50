@@ -7,140 +7,113 @@ import streamlit as st
 import yfinance as yf
 
 
-# -----------------------------
-# App Config
-# -----------------------------
-st.set_page_config(
-    page_title="Nifty 50 Stock Data Downloader",
-    layout="wide"
-)
+st.set_page_config(page_title="Nifty 50 Data Downloader", layout="wide")
 
 st.title("Nifty 50 Stock Data Downloader")
-st.write("Download daily Yahoo Finance data for Nifty 50 stocks and save each stock as a separate CSV file.")
+st.write("Downloads daily Yahoo Finance data for each Nifty 50 symbol and saves separate CSV files.")
 
 
-# -----------------------------
-# Constants
-# -----------------------------
-INPUT_FILE = "Nifty 50.csv"
+INPUT_FILE = "Nifty 50 symbols.csv"
 OUTPUT_FOLDER = "data"
-START_DATE = "2025-01-01"
+DEFAULT_START_DATE = "2025-01-01"
 
 
-# -----------------------------
-# Helper Functions
-# -----------------------------
 def clean_filename(name):
-    return re.sub(r'[\\/*?:"<>|]', "_", str(name)).strip()
+    return re.sub(r'[\\/*?:"<>|]', "_", str(name))
 
 
-def convert_to_yahoo_ticker(stock):
-    stock = str(stock).strip().upper()
+def to_yahoo_symbol(symbol):
+    symbol = str(symbol).strip().upper()
 
-    if stock.endswith(".NS"):
-        return stock
+    if symbol.endswith(".NS"):
+        return symbol
 
-    return stock + ".NS"
-
-
-def read_stock_list(file_path):
-    df = pd.read_csv(file_path)
-
-    if df.empty:
-        raise ValueError("CSV file is empty.")
-
-    stocks = df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
-
-    if not stocks:
-        raise ValueError("No stock names found in the first column of the CSV.")
-
-    return stocks
+    return f"{symbol}.NS"
 
 
-def download_stock_data(ticker, start_date):
-    data = yf.download(
+def read_symbols(file_path):
+    df = pd.read_csv(file_path, header=None)
+    symbols = df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+
+    if not symbols:
+        raise ValueError("No symbols found in the CSV file.")
+
+    return symbols
+
+
+def download_data(ticker, start_date):
+    return yf.download(
         ticker,
         start=start_date,
         end=date.today().strftime("%Y-%m-%d"),
         progress=False,
-        auto_adjust=False
+        auto_adjust=False,
     )
 
-    return data
-
-
-# -----------------------------
-# Main App
-# -----------------------------
-st.subheader("Input File Check")
 
 if not os.path.exists(INPUT_FILE):
-    st.error(f"Input file not found: {INPUT_FILE}")
+    st.error(f"File not found: {INPUT_FILE}")
     st.stop()
-
-st.success(f"Input file found: {INPUT_FILE}")
 
 try:
-    stock_list = read_stock_list(INPUT_FILE)
-    st.write(f"Total stocks found: **{len(stock_list)}**")
-
-    with st.expander("View stock list"):
-        st.write(stock_list)
-
+    symbols = read_symbols(INPUT_FILE)
+    st.success(f"Loaded {len(symbols)} symbols from {INPUT_FILE}")
 except Exception as e:
-    st.error(f"Error reading stock list: {e}")
+    st.error(f"Error reading CSV: {e}")
     st.stop()
 
 
-st.subheader("Download Settings")
+with st.expander("View symbols"):
+    st.write(symbols)
+
 
 start_date = st.date_input(
-    "Select start date",
-    value=pd.to_datetime(START_DATE).date()
+    "Start date",
+    value=pd.to_datetime(DEFAULT_START_DATE).date()
 )
 
-if st.button("Download Nifty 50 Data"):
+
+if st.button("Download Data"):
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-    success_count = 0
-    failed_stocks = []
+    success = []
+    failed = []
 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    progress = st.progress(0)
+    status = st.empty()
 
-    for i, stock in enumerate(stock_list):
-        ticker = convert_to_yahoo_ticker(stock)
-        status_text.write(f"Downloading: {ticker}")
+    for i, symbol in enumerate(symbols):
+        ticker = to_yahoo_symbol(symbol)
+        status.write(f"Downloading {ticker}...")
 
         try:
-            data = download_stock_data(ticker, start_date.strftime("%Y-%m-%d"))
+            data = download_data(ticker, start_date.strftime("%Y-%m-%d"))
 
             if data.empty:
-                failed_stocks.append((stock, "No data returned"))
+                failed.append([symbol, ticker, "No data returned"])
             else:
-                file_name = clean_filename(ticker) + ".csv"
-                file_path = os.path.join(OUTPUT_FOLDER, file_name)
+                file_path = os.path.join(
+                    OUTPUT_FOLDER,
+                    clean_filename(ticker) + ".csv"
+                )
                 data.to_csv(file_path)
-                success_count += 1
+                success.append([symbol, ticker, file_path])
 
         except Exception as e:
-            failed_stocks.append((stock, str(e)))
+            failed.append([symbol, ticker, str(e)])
 
-        progress_bar.progress((i + 1) / len(stock_list))
+        progress.progress((i + 1) / len(symbols))
 
-    st.success(f"Download completed. Successfully downloaded: {success_count} stocks.")
+    st.success(f"Completed. Downloaded data for {len(success)} stocks.")
 
-    if failed_stocks:
-        st.warning("Some stocks failed:")
-        failed_df = pd.DataFrame(failed_stocks, columns=["Stock", "Reason"])
-        st.dataframe(failed_df)
+    if success:
+        st.subheader("Successful Downloads")
+        st.dataframe(
+            pd.DataFrame(success, columns=["Symbol", "Yahoo Ticker", "Saved File"])
+        )
 
-    st.subheader("Downloaded Files")
-
-    downloaded_files = os.listdir(OUTPUT_FOLDER)
-
-    if downloaded_files:
-        st.write(f"Files saved inside `{OUTPUT_FOLDER}/` folder:")
-        st.dataframe(pd.DataFrame(downloaded_files, columns=["File Name"]))
-    else:
-        st.write("No files downloaded.")
+    if failed:
+        st.subheader("Failed Downloads")
+        st.dataframe(
+            pd.DataFrame(failed, columns=["Symbol", "Yahoo Ticker", "Reason"])
+        )
